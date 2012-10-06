@@ -914,7 +914,7 @@ static void as3676_set_brightness(struct as3676_data *data,
 		struct as3676_led *led, enum led_brightness value)
 {
 	u8 prev_value = AS3676_READ_REG(led->reg);
-
+    pr_debug("[as3676] set %s brightness %d", led->name, value);
 	AS3676_LOCK();
 	if (data->in_shutdown && value != LED_OFF)
 		goto no_action;
@@ -2177,7 +2177,8 @@ static void as3676_dim_work(struct work_struct *work)
 
 	AS3676_LOCK();
 	if (dir == -1) { /* down dimming */
-		for (i = 0; i < data->num_leds; i++) {
+		/* do not handle led 0 and 1 (lcd) */
+		for (i = 2; i < data->num_leds; i++) {
 			struct as3676_led *led = data->leds + i;
 			if (led->dim_brightness == -1)
 				continue;
@@ -2196,7 +2197,8 @@ static void as3676_dim_work(struct work_struct *work)
 		/* Possibly DCDC can be switched off now */
 		as3676_check_DCDC_postfix(data);
 	} else { /* up dimming */
-		for (i = 0; i < data->num_leds; i++) {
+		/* do not handle led 0 and 1 (lcd) */
+		for (i = 2; i < data->num_leds; i++) {
 			struct as3676_led *led = data->leds + i;
 			if (led->dim_brightness == -1)
 				continue;
