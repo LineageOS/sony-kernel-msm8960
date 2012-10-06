@@ -210,7 +210,9 @@ struct as3676_data {
 	int ldo_count;
 	u8 caps_mounted_on_dcdc_feedback;
 	u8 als_control_backup;
+#ifdef CONFIG_LEDS_AS3676_LCD_DIM
 	u8 als_result_backup;
+#endif
 	u8 in_shutdown;
 	int dls_users;
 };
@@ -600,8 +602,9 @@ static int as3676_suspend(struct device *dev)
 
 	AS3676_LOCK();
 	data->als_control_backup = AS3676_READ_REG(AS3676_REG_ALS_control);
-	data->als_result_backup = i2c_smbus_read_byte_data(data->client,
-			AS3676_REG_ALS_result);
+#ifdef CONFIG_LEDS_AS3676_LCD_DIM
+	data->als_result_backup = i2c_smbus_read_byte_data(data->client, AS3676_REG_ALS_result);
+#endif
 	as3676_switch_als(data, 0);
 	if (data->dls_users)
 		AS3676_MODIFY_REG(AS3676_REG_GPIO_control, 0x0f, 0x04);
@@ -619,7 +622,9 @@ static int as3676_resume(struct device *dev)
 	dev_info(dev, "Resuming AS3676\n");
 
 	AS3676_LOCK();
+#ifdef CONFIG_LEDS_AS3676_LCD_DIM
 	AS3676_WRITE_REG(AS3676_REG_ALS_result, data->als_result_backup);
+#endif
 	if (data->ldo_count)
 		AS3676_MODIFY_REG(AS3676_REG_Control, 1, 1);
 	if (data->dls_users)
@@ -914,7 +919,7 @@ static void as3676_set_brightness(struct as3676_data *data,
 		struct as3676_led *led, enum led_brightness value)
 {
 	u8 prev_value = AS3676_READ_REG(led->reg);
-
+    pr_err("[as3676] set %s brightness %d", led->name, value);
 	AS3676_LOCK();
 	if (data->in_shutdown && value != LED_OFF)
 		goto no_action;
@@ -2177,7 +2182,11 @@ static void as3676_dim_work(struct work_struct *work)
 
 	AS3676_LOCK();
 	if (dir == -1) { /* down dimming */
+#ifdef CONFIG_LEDS_AS3676_LCD_DIM
 		for (i = 0; i < data->num_leds; i++) {
+#else
+		for (i = 2; i < data->num_leds; i++) {
+#endif
 			struct as3676_led *led = data->leds + i;
 			if (led->dim_brightness == -1)
 				continue;
@@ -2196,7 +2205,11 @@ static void as3676_dim_work(struct work_struct *work)
 		/* Possibly DCDC can be switched off now */
 		as3676_check_DCDC_postfix(data);
 	} else { /* up dimming */
+#ifdef CONFIG_LEDS_AS3676_LCD_DIM
 		for (i = 0; i < data->num_leds; i++) {
+#else
+		for (i = 2; i < data->num_leds; i++) {
+#endif
 			struct as3676_led *led = data->leds + i;
 			if (led->dim_brightness == -1)
 				continue;
