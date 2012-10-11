@@ -212,8 +212,9 @@ void radio_hci_event_packet(struct radio_hci_dev *hdev, struct sk_buff *skb);
 #define HCI_FM_GET_DET_CH_TH_CMD 16
 
 /* Defines for FM TX*/
-#define TX_PS_DATA_LENGTH 96
+#define TX_PS_DATA_LENGTH 108
 #define TX_RT_DATA_LENGTH 64
+#define PS_STRING_LEN     9
 
 /* ----- HCI Command request ----- */
 struct hci_fm_recv_conf_req {
@@ -240,7 +241,7 @@ struct hci_fm_tx_ps {
 	__u16	pi;
 	__u8	pty;
 	__u8	ps_repeatcount;
-	__u8	ps_len;
+	__u8	ps_num;
 	__u8    ps_data[TX_PS_DATA_LENGTH];
 } __packed;
 
@@ -248,7 +249,7 @@ struct hci_fm_tx_rt {
 	__u8    rt_control;
 	__u16	pi;
 	__u8	pty;
-	__u8	ps_len;
+	__u8	rt_len;
 	__u8    rt_data[TX_RT_DATA_LENGTH];
 } __packed;
 
@@ -491,6 +492,29 @@ struct hci_fm_dbg_param_rsp {
 	__u8    in_det_out;
 } __packed;
 
+#define CLKSPURID_INDEX0	0
+#define CLKSPURID_INDEX1	5
+#define CLKSPURID_INDEX2	10
+#define CLKSPURID_INDEX3	15
+#define CLKSPURID_INDEX4	20
+#define CLKSPURID_INDEX5	25
+
+#define MAX_SPUR_FREQ_LIMIT	30
+#define CKK_SPUR		0x3B
+#define SPUR_DATA_SIZE		0x4
+#define SPUR_ENTRIES_PER_ID	0x5
+
+#define COMPUTE_SPUR(val)         ((((val) - (76000)) / (50)))
+#define GET_FREQ(val, bit)        ((bit == 1) ? ((val) >> 8) : ((val) & 0xFF))
+#define GET_SPUR_ENTRY_LEVEL(val) ((val) / (5))
+
+struct hci_fm_spur_data {
+	__u32	freq[MAX_SPUR_FREQ_LIMIT];
+	__s8	rmssi[MAX_SPUR_FREQ_LIMIT];
+	__u8	enable[MAX_SPUR_FREQ_LIMIT];
+} __packed;
+
+
 /* HCI dev events */
 #define RADIO_HCI_DEV_REG			1
 #define RADIO_HCI_DEV_WRITE			2
@@ -574,6 +598,11 @@ enum v4l2_cid_private_iris_t {
 	V4L2_CID_PRIVATE_INTF_HIGH_THRESHOLD,
 	V4L2_CID_PRIVATE_SINR_THRESHOLD,
 	V4L2_CID_PRIVATE_SINR_SAMPLES,
+	V4L2_CID_PRIVATE_SPUR_FREQ,
+	V4L2_CID_PRIVATE_SPUR_FREQ_RMSSI,
+	V4L2_CID_PRIVATE_SPUR_SELECTION,
+	V4L2_CID_PRIVATE_UPDATE_SPUR_TABLE,
+	V4L2_CID_PRIVATE_VALID_CHANNEL,
 
 	/*using private CIDs under userclass*/
 	V4L2_CID_PRIVATE_IRIS_READ_DEFAULT = 0x00980928,
@@ -682,6 +711,14 @@ enum search_t {
 	RDS_AF_JUMP,
 };
 
+enum spur_entry_levels {
+	ENTRY_0,
+	ENTRY_1,
+	ENTRY_2,
+	ENTRY_3,
+	ENTRY_4,
+	ENTRY_5,
+};
 
 /* Band limits */
 #define REGION_US_EU_BAND_LOW              87500
@@ -711,7 +748,7 @@ enum search_t {
 /* constants */
 #define  RDS_BLOCKS_NUM	(4)
 #define BYTES_PER_BLOCK	(3)
-#define MAX_PS_LENGTH	(96)
+#define MAX_PS_LENGTH	(108)
 #define MAX_RT_LENGTH	(64)
 #define RDS_GRP_CNTR_LEN (36)
 #define RX_RT_DATA_LENGTH (63)
@@ -753,6 +790,11 @@ enum search_t {
 #define CALIB_DATA_OFSET  2
 #define CALIB_MODE_OFSET  1
 #define MAX_CALIB_SIZE 75
+
+/* Channel validity */
+#define INVALID_CHANNEL		(0)
+#define VALID_CHANNEL		(1)
+
 struct hci_fm_set_cal_req_proc {
 	__u8    mode;
 	/*Max process calibration data size*/
@@ -776,6 +818,7 @@ struct hci_cc_do_calibration_rsp {
 #define RDS_SYNC_INTR   (1 << 1)
 #define AUDIO_CTRL_INTR (1 << 2)
 #define AF_JUMP_ENABLE  (1 << 4)
+
 int hci_def_data_read(struct hci_fm_def_data_rd_req *arg,
 	struct radio_hci_dev *hdev);
 int hci_def_data_write(struct hci_fm_def_data_wr_req *arg,

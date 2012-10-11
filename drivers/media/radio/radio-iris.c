@@ -87,6 +87,7 @@ struct iris_device {
 	unsigned char power_mode;
 	int search_on;
 	unsigned int tone_freq;
+	unsigned char spur_table_size;
 	unsigned char g_scan_time;
 	unsigned int g_antenna;
 	unsigned int g_rds_grp_proc_ps;
@@ -100,11 +101,14 @@ struct iris_device {
 	struct hci_fm_sig_threshold_rsp sig_th;
 	struct hci_fm_ch_det_threshold ch_det_threshold;
 	struct hci_fm_data_rd_rsp default_data;
+	struct hci_fm_spur_data spur_data;
+	unsigned char is_station_valid;
 };
 
 static struct video_device *priv_videodev;
 static int iris_do_calibration(struct iris_device *radio);
 
+static int update_spur_table(struct iris_device *radio);
 static struct v4l2_queryctrl iris_v4l2_queryctrl[] = {
 	{
 	.id	= V4L2_CID_AUDIO_VOLUME,
@@ -2342,37 +2346,6 @@ static int iris_recv_set_region(struct iris_device *radio, int req_region)
 	int retval;
 	radio->region = req_region;
 
-	switch (radio->region) {
-	case IRIS_REGION_US:
-		radio->recv_conf.band_low_limit =
-			REGION_US_EU_BAND_LOW;
-		radio->recv_conf.band_high_limit =
-			REGION_US_EU_BAND_HIGH;
-		break;
-	case IRIS_REGION_EU:
-		radio->recv_conf.band_low_limit =
-			REGION_US_EU_BAND_LOW;
-		radio->recv_conf.band_high_limit =
-			REGION_US_EU_BAND_HIGH;
-		break;
-	case IRIS_REGION_JAPAN:
-		radio->recv_conf.band_low_limit =
-			REGION_JAPAN_STANDARD_BAND_LOW;
-		radio->recv_conf.band_high_limit =
-			REGION_JAPAN_STANDARD_BAND_HIGH;
-		break;
-	case IRIS_REGION_JAPAN_WIDE:
-		radio->recv_conf.band_low_limit =
-			REGION_JAPAN_WIDE_BAND_LOW;
-		radio->recv_conf.band_high_limit =
-			REGION_JAPAN_WIDE_BAND_HIGH;
-		break;
-	default:
-		/* The user specifies the value.
-		   So nothing needs to be done */
-		break;
-	}
-
 	retval = hci_set_fm_recv_conf(
 			&radio->recv_conf,
 			radio->fm_hdev);
@@ -2385,34 +2358,6 @@ static int iris_trans_set_region(struct iris_device *radio, int req_region)
 {
 	int retval;
 	radio->region = req_region;
-
-	switch (radio->region) {
-	case IRIS_REGION_US:
-		radio->trans_conf.band_low_limit =
-			REGION_US_EU_BAND_LOW;
-		radio->trans_conf.band_high_limit =
-			REGION_US_EU_BAND_HIGH;
-		break;
-	case IRIS_REGION_EU:
-		radio->trans_conf.band_low_limit =
-			REGION_US_EU_BAND_LOW;
-		radio->trans_conf.band_high_limit =
-			REGION_US_EU_BAND_HIGH;
-		break;
-	case IRIS_REGION_JAPAN:
-		radio->trans_conf.band_low_limit =
-			REGION_JAPAN_STANDARD_BAND_LOW;
-		radio->trans_conf.band_high_limit =
-			REGION_JAPAN_STANDARD_BAND_HIGH;
-		break;
-	case IRIS_REGION_JAPAN_WIDE:
-		radio->recv_conf.band_low_limit =
-			REGION_JAPAN_WIDE_BAND_LOW;
-		radio->recv_conf.band_high_limit =
-			REGION_JAPAN_WIDE_BAND_HIGH;
-	default:
-		break;
-	}
 
 	retval = hci_set_fm_trans_conf(
 			&radio->trans_conf,
@@ -2637,6 +2582,9 @@ static int iris_vidioc_g_ctrl(struct file *file, void *priv,
 
 		ctrl->value = radio->ch_det_threshold.sinr_samples;
 		break;
+	case V4L2_CID_PRIVATE_VALID_CHANNEL:
+		ctrl->value = radio->is_station_valid;
+		break;
 	default:
 		retval = -EINVAL;
 	}
@@ -2700,7 +2648,7 @@ static int iris_vidioc_s_ext_ctrls(struct file *file, void *priv,
 		tx_ps.pi = radio->pi;
 		tx_ps.pty = radio->pty;
 		tx_ps.ps_repeatcount = radio->ps_repeatcount;
-		tx_ps.ps_len = bytes_to_copy;
+		tx_ps.ps_num = (bytes_to_copy / PS_STRING_LEN);
 
 		retval = radio_hci_request(radio->fm_hdev, hci_trans_ps_req,
 				(unsigned long)&tx_ps, RADIO_HCI_TIMEOUT);
@@ -2719,7 +2667,7 @@ static int iris_vidioc_s_ext_ctrls(struct file *file, void *priv,
 		tx_rt.rt_control =  0x01;
 		tx_rt.pi = radio->pi;
 		tx_rt.pty = radio->pty;
-		tx_rt.ps_len = bytes_to_copy;
+		tx_rt.rt_len = bytes_to_copy;
 
 		retval = radio_hci_request(radio->fm_hdev, hci_trans_rt_req,
 				(unsigned long)&tx_rt, RADIO_HCI_TIMEOUT);
@@ -2807,6 +2755,8 @@ static int iris_vidioc_s_ctrl(struct file *file, void *priv,
 	struct hci_fm_tx_rt tx_rt = {0};
 	struct hci_fm_def_data_rd_req rd_txgain;
 	struct hci_fm_def_data_wr_req wr_txgain;
+	char sinr_th, sinr;
+	__u8 intf_det_low_th, intf_det_high_th, intf_det_out;
 
 	switch (ctrl->id) {
 	case V4L2_CID_PRIVATE_IRIS_TX_TONE:
@@ -2895,6 +2845,7 @@ static int iris_vidioc_s_ctrl(struct file *file, void *priv,
 				FMDERR("get frequency failed %d\n", retval);
 			break;
 		case FM_OFF:
+			radio->spur_table_size = 0;
 			switch (radio->mode) {
 			case FM_RECV:
 				retval = hci_cmd(HCI_FM_DISABLE_RECV_CMD,
@@ -3241,9 +3192,147 @@ static int iris_vidioc_s_ctrl(struct file *file, void *priv,
 		*/
 		retval = 0;
 		break;
+	case V4L2_CID_PRIVATE_SPUR_FREQ:
+		if (radio->spur_table_size >= MAX_SPUR_FREQ_LIMIT) {
+			FMDERR("%s: Spur Table Full!\n", __func__);
+			retval = -1;
+		} else
+			radio->spur_data.freq[radio->spur_table_size] =
+				ctrl->value;
+		break;
+	case V4L2_CID_PRIVATE_SPUR_FREQ_RMSSI:
+		if (radio->spur_table_size >= MAX_SPUR_FREQ_LIMIT) {
+			FMDERR("%s: Spur Table Full!\n", __func__);
+			retval = -1;
+		} else
+			radio->spur_data.rmssi[radio->spur_table_size] =
+				ctrl->value;
+		break;
+	case V4L2_CID_PRIVATE_SPUR_SELECTION:
+		if (radio->spur_table_size >= MAX_SPUR_FREQ_LIMIT) {
+			FMDERR("%s: Spur Table Full!\n", __func__);
+			retval = -1;
+		} else {
+			radio->spur_data.enable[radio->spur_table_size] =
+				ctrl->value;
+			radio->spur_table_size++;
+		}
+		break;
+	case V4L2_CID_PRIVATE_UPDATE_SPUR_TABLE:
+		update_spur_table(radio);
+		break;
+	case V4L2_CID_PRIVATE_VALID_CHANNEL:
+		retval = hci_cmd(HCI_FM_GET_DET_CH_TH_CMD, radio->fm_hdev);
+		if (retval < 0) {
+			FMDERR("%s: Failed to determine channel's validity\n",
+				__func__);
+			return retval;
+		} else {
+			sinr_th = radio->ch_det_threshold.sinr;
+			intf_det_low_th = radio->ch_det_threshold.low_th;
+			intf_det_high_th = radio->ch_det_threshold.high_th;
+		}
+
+		retval = hci_cmd(HCI_FM_GET_STATION_PARAM_CMD, radio->fm_hdev);
+		if (retval < 0) {
+			FMDERR("%s: Failed to determine channel's validity\n",
+				__func__);
+			return retval;
+		} else
+			sinr = radio->fm_st_rsp.station_rsp.sinr;
+
+		retval = hci_cmd(HCI_FM_STATION_DBG_PARAM_CMD, radio->fm_hdev);
+		if (retval < 0) {
+			FMDERR("%s: Failed to determine channel's validity\n",
+				 __func__);
+			return retval;
+		} else
+			intf_det_out = radio->st_dbg_param.in_det_out;
+
+		if ((sinr >= sinr_th) && (intf_det_out >= intf_det_low_th) &&
+			(intf_det_out <= intf_det_high_th))
+			radio->is_station_valid = VALID_CHANNEL;
+		else
+			radio->is_station_valid = INVALID_CHANNEL;
+		break;
 	default:
 		retval = -EINVAL;
 	}
+	return retval;
+}
+
+static int update_spur_table(struct iris_device *radio)
+{
+	struct hci_fm_def_data_wr_req default_data;
+	int len = 0, index = 0, offset = 0, i = 0;
+	int retval = 0, temp = 0, cnt = 0;
+
+	memset(&default_data, 0, sizeof(default_data));
+
+	/* Pass the mode of SPUR_CLK */
+	default_data.mode = CKK_SPUR;
+
+	temp = radio->spur_table_size;
+	for (cnt = 0; cnt < (temp / 5); cnt++) {
+		offset = 0;
+		/*
+		 * Program the spur entries in spur table in following order:
+		 *    Spur index
+		 *    Length of the spur data
+		 *    Spur Data:
+		 *        MSB of the spur frequency
+		 *        LSB of the spur frequency
+		 *        Enable/Disable the spur frequency
+		 *        RMSSI value of the spur frequency
+		 */
+		default_data.data[offset++] = ENTRY_0 + cnt;
+		for (i = 0; i < SPUR_ENTRIES_PER_ID; i++) {
+			default_data.data[offset++] = GET_FREQ(COMPUTE_SPUR(
+				radio->spur_data.freq[index]), 0);
+			default_data.data[offset++] = GET_FREQ(COMPUTE_SPUR(
+				radio->spur_data.freq[index]), 1);
+			default_data.data[offset++] =
+				radio->spur_data.enable[index];
+			default_data.data[offset++] =
+				radio->spur_data.rmssi[index];
+			index++;
+		}
+		len = (SPUR_ENTRIES_PER_ID * SPUR_DATA_SIZE);
+		default_data.length = (len + 1);
+		retval = hci_def_data_write(&default_data, radio->fm_hdev);
+		if (retval < 0) {
+			FMDBG("%s: Failed to configure entries for ID : %d\n",
+				__func__, default_data.data[0]);
+			return retval;
+		}
+	}
+
+	/* Compute balance SPUR frequencies to be programmed */
+	temp %= SPUR_ENTRIES_PER_ID;
+	if (temp > 0) {
+		offset = 0;
+		default_data.data[offset++] = (radio->spur_table_size / 5);
+		for (i = 0; i < temp; i++) {
+			default_data.data[offset++] = GET_FREQ(COMPUTE_SPUR(
+				radio->spur_data.freq[index]), 0);
+			default_data.data[offset++] = GET_FREQ(COMPUTE_SPUR(
+				radio->spur_data.freq[index]), 1);
+			default_data.data[offset++] =
+				radio->spur_data.enable[index];
+			default_data.data[offset++] =
+				radio->spur_data.rmssi[index];
+			index++;
+		}
+		len = (temp * SPUR_DATA_SIZE);
+		default_data.length = (len + 1);
+		retval = hci_def_data_write(&default_data, radio->fm_hdev);
+		if (retval < 0) {
+			FMDERR("%s: Failed to configure entries for ID : %d\n",
+				__func__, default_data.data[0]);
+			return retval;
+		}
+	}
+
 	return retval;
 }
 

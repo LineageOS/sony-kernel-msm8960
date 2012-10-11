@@ -1742,7 +1742,8 @@ static void probe_perf_disable(struct ftrace_event_call *call)
 #endif	/* CONFIG_PERF_EVENTS */
 
 static __kprobes
-int kprobe_register(struct ftrace_event_call *event, enum trace_reg type)
+int kprobe_register(struct ftrace_event_call *event,
+		    enum trace_reg type, void *data)
 {
 	switch (type) {
 	case TRACE_REG_REGISTER:
@@ -1756,6 +1757,11 @@ int kprobe_register(struct ftrace_event_call *event, enum trace_reg type)
 		return probe_perf_enable(event);
 	case TRACE_REG_PERF_UNREGISTER:
 		probe_perf_disable(event);
+		return 0;
+	case TRACE_REG_PERF_OPEN:
+	case TRACE_REG_PERF_CLOSE:
+	case TRACE_REG_PERF_ADD:
+	case TRACE_REG_PERF_DEL:
 		return 0;
 #endif
 	}
